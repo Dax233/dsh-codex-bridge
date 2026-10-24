@@ -126,11 +126,28 @@ D1 在真实 `${CODEX_HOME}` 上做了模块级修复前后对比：151 个仅�
 | — | liveness 默认扫描全部 goal/automation 线程 | 历史线程多时输出很长；用 `config.liveness.threads` 收窄。 |
 | — | 未知线程导致整次调用失败 | `codex_liveness({ threads: [...] })` 中一个错名会中断整批，而非逐条标注。 |
 | — | `limit` 传小数退回默认值 | 非取整（如 2.5 → 默认 8/15）；用整数。 |
+| — | 桌面版持有的线程不能 `codex_send` resume | Codex 0.163 以 writer 锁拒绝外部 CLI 写入，无绕过选项；写方向需用官方 `codex queue`（插件尚未封装该工具）。 |
+
+## 对接桌面版持有的线程：writer 锁与官方 queue 通道（2026-10-24 补充实测）
+
+真实环境里五个研究线程（seori / sia / fei / danny / kiri）由 Codex 桌面版进程持有 OS 级 writer 锁（`${CODEX_HOME}/thread-writer-locks/<id>.lock` 被独占锁定）。因此：
+
+- `codex_send`（内部 `codex exec resume`）对这类线程失败：
+  `thread-store conflict: thread <id> already has an active writer` / `thread/resume failed ... (code -32600)`；`codex exec resume --help` 没有绕过 writer 的选项。
+- `codex_threads` / `codex_read` / `codex_goals` / `codex_liveness` 仍然可用（只读不受影响）。
+- Codex CLI 0.163 提供官方队列通道：`codex queue --thread <完整 UUID> --message <text>`（用线程名会报 `No active session found matching '<name>'`）。投递后由桌面版消费并执行 turn，队列项随即从 `queued_items` 移除；本次实测 seori 在投递后数秒内执行，DSH 侧用 `codex_read` 回读到 `RELAY-HANDSHAKE-OK`。
+- 结论：桌面版运行时，relay 的"写"方向应走 queue；目前插件尚未提供 `codex_queue` 工具（可用 CLI 手动/脚本投递）。
+
+| 能力 | 对桌面版持有的线程 |
+|---|---|
+| `codex_threads` / `codex_read` / `codex_goals` / `codex_liveness` | 可用（只读） |
+| `codex_send`（resume） | 不可用：外部 writer 被拒 |
+| `codex queue`（CLI） | 可用：桌面版消费执行，DSH 侧用 `codex_read` 回读 |
 
 ## 未验证 / 方法边界
 
 - macOS / Linux 实机行为（代码只按平台标准位置探测，Windows 之外未实测）。
-- 真实 Codex 桌面 app 与本插件同时写同一线程时的拒绝形态（只验证了插件侧单写者保护）。
+- ~~真实 Codex 桌面 app 与本插件同时写同一线程时的拒绝形态~~ 已实测：桌面版持有 writer 锁时 `codex_send` 被 Codex 以 `thread-store conflict: ... already has an active writer` 拒绝（见上一节）。
 - 真实 `nudge` 在真实 stalled 线程上的端到端效果（仅验证门禁与夹具路径；默认关闭）。
 - 超过 `maxOutputBytes` 的 spill/lossy 在真实 CLI 下的行为（夹具已覆盖逻辑）。
 - `config.liveness.threads` 按 ID 生效的 LIVE 触发（当前 profile 未配置该项；离线测试已覆盖）。
