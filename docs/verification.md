@@ -45,7 +45,7 @@
 
 ### C2 运行注册表是 Host 级共享 — PASS
 
-新会话的 `codex_run` 能看到上一个 DSH 会话创建的 run（同一 Host 进程的插件实例），按开始时间倒序。含义：**run 记录跨 agent 会话可见，但 DSH 重启后清空**（内存态）。
+新会话的 `codex_run` 能看到上一个 DSH 会话创建的 run（同一 Host 进程的插件实例），按开始时间倒序。含义：**run 记录跨 agent 会话可见，但 DSH 重启后清空**（内存态）。2026-10-24 22:17 重启 DSH 后实测：`codex_run` 返回 `no bridge runs in this Host session yet`，确认清空行为。
 
 ### C3 安装与加载 — PASS
 
@@ -101,7 +101,19 @@ README 与实际行为一致；验证中发现的边界已补进 README「行为
 
 D1 在真实 `${CODEX_HOME}` 上做了模块级修复前后对比：151 个仅索引线程从 `lastActivityMs=0`（20750.6d）变为真实索引年龄（16–23 天量级），epoch 行 0 个。
 
-> 生效条件：运行中的 DSH Host 需重载插件 bundle（禁用→启用）或重启，LIVE 工具才使用修复后的代码；本仓库 `npm test` 已覆盖修复后行为。
+> 生效条件与复验：运行中的 DSH Host 需重载插件 bundle（禁用→启用）或重启，LIVE 工具才使用修复后的代码。2026-10-24 22:17 重启 DSH 后，D1 / D3 / D4 已在 live 工具上复验通过（见下节）；D2 因当前 profile 未配置 `liveness.threads`，仍只有离线测试证据。
+
+## 重启后 live 复验（2026-10-24 22:17，重启后代码 = `d5514ae`）
+
+| 检查 | 结果 |
+|---|---|
+| 六个 `codex_*` 工具重新注册并可用 | PASS（重启后直接调用成功） |
+| C2 运行注册表重启后清空 | `codex_run` 返回 `no bridge runs in this Host session yet`（此前只有推断，现已实测） |
+| D1：仅索引线程的最近写入 | 抽样归档线程显示 `last=16.5d`（修复前为 20750.6d）；Top 50 行无 epoch 年龄；`activeWithinMinutes=30d` 返回 35 行且包含仅索引线程（修复前会被误排除） |
+| D3：`codex_run` usage | 真实 turn 完成 27s 后详情显示 `usage: 17.5k`（修复前恒为 `—`） |
+| D4：prompt 逐字节 | 新线程 rollout 中的 user 消息与发送内容完全一致（长度 100，首尾各两个换行均保留） |
+| 真实派发链路 | 新线程 27s 完成 `AFTER-RESTART-OK`；`codex_read` 可回读；`codex_run` 列表含该 run |
+| D2：按 ID 配置 liveness 线程 | 仍未 live 触发（profile 未配置 `liveness.threads`）；由离线回归测试覆盖 |
 
 ## 仍存在的限制（未修复，均为设计或已知边界）
 
@@ -121,7 +133,7 @@ D1 在真实 `${CODEX_HOME}` 上做了模块级修复前后对比：151 个仅�
 - 真实 Codex 桌面 app 与本插件同时写同一线程时的拒绝形态（只验证了插件侧单写者保护）。
 - 真实 `nudge` 在真实 stalled 线程上的端到端效果（仅验证门禁与夹具路径；默认关闭）。
 - 超过 `maxOutputBytes` 的 spill/lossy 在真实 CLI 下的行为（夹具已覆盖逻辑）。
-- DSH 重启后运行注册表清空（按内存实现推断，未实测重启）。
+- `config.liveness.threads` 按 ID 生效的 LIVE 触发（当前 profile 未配置该项；离线测试已覆盖）。
 - `node:sqlite` 不可用运行时的实际降级表现（仅代码审阅）。
 
 ## 复现
