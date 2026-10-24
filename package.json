@@ -24,6 +24,10 @@
     }
   },
   "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/unit.test.mjs",
+    "smoke": "node tests/smoke.mjs"
+  },
   "engines": {
     "node": ">=22"
   },
