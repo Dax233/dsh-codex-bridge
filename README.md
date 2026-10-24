@@ -63,6 +63,20 @@ DeepSeek Harness 的 Codex 桥。让 DSH 里的 Agent 可以：
 - **无头审批**：`codex exec` 没有人工审批通道，默认 `approval_policy=never`；sandbox 默认继承 Codex 原生配置，可从参数覆盖。
 - **单写者**：同一线程已有本插件的进行中 turn 时，`codex_send` 会拒绝再开第二个写者；桌面 app 正在写的线程也可能拒绝外部 resume，错误会原样报告。
 - **goal 恢复不代做**：`codex_liveness` 不会恢复 blocked goal，也不会对 paused goal 发 nudge；恢复仍需有授权的路径。
+- **prompt 原样传入**：`codex_send` 只用 `trim()` 判断是否为空，首尾空白与内部换行都会原样到达 Codex。
+- **无取消、无流式**：运行中的 turn 不能通过工具取消（Host 关闭时会被终止），`codex_send` 只返回最终消息；长任务用 `waitMs: 0` + `codex_run` 轮询。
+- **`codex_read` 默认含 developer 条目**：默认 kinds 包含 `developer`（Codex 注入的较长指令），只看对话时传 `kinds: ['user', 'assistant', 'turn-end']`。
+- **liveness 默认扫描范围**：不带 `threads` 时扫描所有 goal/automation 线程，历史线程多时输出很长；用 `config.liveness.threads`（线程名或 ID 均可）收窄。
+- **goal 读取依赖 `node:sqlite`**：运行时缺少该模块时 goal 相关能力优雅降级（显示 goals unavailable），其余工具不受影响。
+
+## 验证
+
+```sh
+npm test        # 单元 + 只读面 + 派发面：68 个离线测试，不消耗模型 turn
+npm run smoke   # 只读冒烟（需要本机 Codex home）
+```
+
+能力矩阵、验证方法、原始结论与已知限制见 [docs/verification.md](docs/verification.md)；分面细节见 [read-plane](docs/verification/read-plane.md) 与 [dispatch-plane](docs/verification/dispatch-plane.md)。验证环境为 Windows + DSH 0.2.1-rc.3 + Codex 桌面版 CLI；真实派发验证只新建测试线程。
 
 ## 安装
 
