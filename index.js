@@ -36,6 +36,18 @@ export function apply(ctx, rawConfig) {
 
   const catalogNow = () => buildCatalog(home);
 
+  /** The calling session's workspace, when that service is available. */
+  const sessionWorkspace = async (exec) => {
+    const service = ctx.get?.('workingDirectory');
+    if (!service || !exec?.agent) return undefined;
+    try {
+      const directory = await service.ensure(exec.agent);
+      return typeof directory === 'string' && directory !== '' ? directory : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   const missingHome = () =>
     new Error(
       'Codex home not found: set config.codexHome or CODEX_HOME (looked for ~/.codex and the configured path)',
@@ -129,7 +141,7 @@ export function apply(ctx, rawConfig) {
         parameters: {
           type: 'object',
           properties: {
-            thread: { type: 'string', description: 'Thread name (e.g. seori) or thread id / id prefix.' },
+            thread: { type: 'string', description: 'Thread name or thread id / id prefix.' },
             limit: { type: 'number', description: 'Maximum items to return (1-40, default 12).' },
             kinds: {
               type: 'array',
@@ -199,7 +211,7 @@ export function apply(ctx, rawConfig) {
           required: ['message'],
         },
         output: { schema: OUTPUT_SCHEMA, render: renderText },
-        async execute(args) {
+        async execute(args, exec) {
           const message = typeof args.message === 'string' ? args.message.trim() : '';
           if (message === '') throw new Error('message must be a non-empty string');
           if (!executable) {
@@ -224,6 +236,7 @@ export function apply(ctx, rawConfig) {
               };
             }
           }
+          if (!workdir) workdir = config.defaultCwd || (await sessionWorkspace(exec));
           const run = runs.start({
             kind,
             threadId,
@@ -386,8 +399,7 @@ export function apply(ctx, rawConfig) {
         async execute(args) {
           if (!home) throw missingHome();
           const catalog = await catalogNow();
-          const idleMs = Math.min(Math.max(Number(args.idleMs) || config.liveness.idleMs, 60_000), 24 * 3_600_000);
-          const requested = Array.isArray(args.threads) && args.threads.length > 0
+          const idleMs = Math.min(Math.max(Number(args.idleMs) || config.liveness.idleMs, 60_000), 24 * 3_600_000);          const requested = Array.isArray(args.threads) && args.threads.length > 0
             ? args.threads.map((reference) => requireThread(catalog, reference))
             : catalog.threads.filter(
                 (thread) =>
@@ -410,7 +422,7 @@ export function apply(ctx, rawConfig) {
             const automation = thread.automations.find((entry) => entry.status === 'ACTIVE');
             let verdict;
             if (running) verdict = `working (bridge turn ${running.id})`;
-            else if (thread.lockMtimeMs > 0 && now - thread.lockMtimeMs < 120_000) verdict = 'working (writer lock fresh)';
+            else if (thread.lockMtimeMs > 0 && now - thread.lockMtimeMs < config.liveness.lockFreshMs) verdict = 'working (writer lock fresh)';
             else if (goal === 'active' && age < idleMs) verdict = 'working (goal active)';
             else if (goal === 'active') verdict = `stalled: goal active, no write for ${ageLabel(age)}`;
             else if (goal === 'blocked') verdict = 'blocked goal (needs an authorized resume; not nudged)';
@@ -433,7 +445,7 @@ export function apply(ctx, rawConfig) {
               ].join(' ');
               try {
                 const run = runs.start({ kind: 'resume', threadId: thread.id, prompt: message, cwd: undefined });
-                await runs.wait(run, 15_000);
+                await runs.wait(run, config.nudgeWaitMs);
                 const snapshot = runs.snapshot(run);
                 lines.push(`  nudged -> run ${snapshot.runId} (${snapshot.status})`);
               } catch (error) {
