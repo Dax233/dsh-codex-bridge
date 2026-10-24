@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ageLabel, clip, readConfig, singleLine, tokensLabel, usageTotal } from '../lib/util.mjs';
-import { parseExecEvents, summarizeEvents } from '../lib/rollout.mjs';
+import { findQueuedTurn, parseExecEvents, summarizeEvents } from '../lib/rollout.mjs';
 
 test('clip marks truncation', () => {
   assert.equal(clip('abcdef', 3), 'abc…');
@@ -45,6 +45,8 @@ test('readConfig applies defaults and normalizes env', () => {
   assert.equal(config.allowNudge, false);
   assert.deepEqual(config.env, {});
   assert.ok(config.liveness.idleMs >= 60_000);
+  assert.equal(config.queueTimeoutMs, 30_000);
+  assert.equal(config.queuePollMs, 1_200);
   const custom = readConfig({ approvalPolicy: 'on-request', allowNudge: true, env: { A: 1, B: true, C: null } });
   assert.equal(custom.approvalPolicy, 'on-request');
   assert.equal(custom.allowNudge, true);
@@ -66,6 +68,23 @@ test('parseExecEvents extracts thread, final message, usage', () => {
   });
   assert.equal(parseExecEvents('not json').threadId, undefined);
   assert.equal(parseExecEvents(JSON.stringify({ type: 'error', message: 'boom' })).error, 'boom');
+});
+
+test('findQueuedTurn locates the turn started by a queued message', () => {
+  const lines = [
+    JSON.stringify({ timestamp: '2026-10-24T10:00:00Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'text', text: 'old message' }] } }),
+    JSON.stringify({ timestamp: '2026-10-24T10:00:01Z', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'old done' } }),
+    JSON.stringify({ timestamp: '2026-10-24T10:05:00Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'text', text: 'task list v1 content' }] } }),
+    JSON.stringify({ timestamp: '2026-10-24T10:05:05Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'text', text: 'queued done' }] } }),
+    JSON.stringify({ timestamp: '2026-10-24T10:05:06Z', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'queued done' } }),
+  ];
+  const found = findQueuedTurn(lines, { afterTimestamp: '2026-10-24T10:01:00Z', marker: 'task list v1' });
+  assert.equal(found.finalMessage, 'queued done');
+  assert.equal(found.at, '2026-10-24T10:05:06Z');
+  const tooLate = findQueuedTurn(lines, { afterTimestamp: '2026-10-24T10:05:00Z', marker: 'task list v1' });
+  assert.equal(tooLate, undefined);
+  const noMarker = findQueuedTurn(lines, { afterTimestamp: '2026-10-24T10:01:00Z', marker: 'absent marker' });
+  assert.equal(noMarker, undefined);
 });
 
 test('summarizeEvents reads messages and filters kinds', () => {

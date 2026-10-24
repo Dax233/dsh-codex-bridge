@@ -23,6 +23,13 @@
  * Common knobs: FAKE_CODEX_DELAY_MS, FAKE_CODEX_THREAD_ID, FAKE_CODEX_FINAL_MESSAGE,
  * FAKE_CODEX_FINAL_REPEAT_LEN, FAKE_CODEX_TOTAL_TOKENS, FAKE_CODEX_STDERR,
  * FAKE_CODEX_EXIT_CODE, FAKE_CODEX_ERROR, FAKE_CODEX_STARTED.
+ *
+ * `queue` subcommand: prints "Queued message <id> for thread <uuid>." and exits 0.
+ *   FAKE_CODEX_QUEUE_MODE=fail   + FAKE_CODEX_QUEUE_STDERR / FAKE_CODEX_QUEUE_EXIT
+ *   FAKE_CODEX_QUEUE_ID          queued id printed back to the bridge
+ *   FAKE_CODEX_QUEUE_APPEND      rollout file to append a simulated delivered turn to
+ *   FAKE_CODEX_QUEUE_DELAY_MS    delay before the simulated delivery (default 200)
+ *   FAKE_CODEX_QUEUE_FINAL       final message of the simulated delivered turn
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -62,9 +69,62 @@ function captureInvocation(stdin) {
 
 const emit = (row) => writeAll(process.stdout, `${JSON.stringify(row)}\n`);
 
+/**
+ * Simulated delivery for `codex queue`: append the queued user message and a
+ * completed turn to a rollout file so the bridge's waitMs observer can find it.
+ */
+function appendQueuedTurn(file, message, finalMessage, delayMs) {
+  const now = Date.now();
+  const row = (offsetMs, type, payload) =>
+    JSON.stringify({ timestamp: new Date(now + offsetMs).toISOString(), type, payload });
+  const rows = [
+    row(0, 'response_item', { type: 'message', role: 'user', content: [{ type: 'text', text: message }] }),
+    row(1_000, 'response_item', { type: 'message', role: 'assistant', content: [{ type: 'text', text: finalMessage }] }),
+    row(1_050, 'event_msg', { type: 'task_complete', last_agent_message: finalMessage }),
+  ];
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      fs.appendFileSync(file, `${rows.join('\n')}\n`);
+      resolve();
+    }, Math.max(0, delayMs));
+  });
+}
+
 async function main() {
   const stdin = await readStdin();
   captureInvocation(stdin);
+
+  const args = process.argv.slice(2);
+  if (args[0] === 'queue') {
+    const threadIndex = args.indexOf('--thread');
+    const messageIndex = args.indexOf('--message');
+    const thread = threadIndex >= 0 ? String(args[threadIndex + 1] ?? '') : '';
+    const message = messageIndex >= 0 ? String(args[messageIndex + 1] ?? '') : '';
+    const queueMode = env.FAKE_CODEX_QUEUE_MODE || 'ok';
+    if (queueMode === 'fail') {
+      await writeAll(process.stderr, env.FAKE_CODEX_QUEUE_STDERR ?? 'fake codex queue failed\n');
+      process.exitCode = Number(env.FAKE_CODEX_QUEUE_EXIT ?? 4);
+      return;
+    }
+    if (queueMode === 'hang') {
+      setInterval(() => {}, 1_000);
+      await new Promise(() => {});
+      return;
+    }
+    const queuedId = env.FAKE_CODEX_QUEUE_ID || '0199cccc-0000-7000-8000-000000000003';
+    await writeAll(process.stdout, `Queued message ${queuedId} for thread ${thread}.\n`);
+    if (env.FAKE_CODEX_QUEUE_APPEND) {
+      await appendQueuedTurn(
+        env.FAKE_CODEX_QUEUE_APPEND,
+        message,
+        env.FAKE_CODEX_QUEUE_FINAL ?? 'queued reply',
+        Number(env.FAKE_CODEX_QUEUE_DELAY_MS ?? 200),
+      );
+    }
+    process.exitCode = 0;
+    return;
+  }
+
   if (env.FAKE_CODEX_STARTED) {
     fs.mkdirSync(path.dirname(env.FAKE_CODEX_STARTED), { recursive: true });
     fs.writeFileSync(env.FAKE_CODEX_STARTED, String(process.pid));

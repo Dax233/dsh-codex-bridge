@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-codex-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Codex bridge for DeepSeek Harness: inspect local Codex threads, dispatch tasks to them, read their transcripts, watch goal state and liveness, and drive headless Codex turns through the subprocess seam.",
@@ -25,7 +25,7 @@
   },
   "license": "MIT",
   "scripts": {
-    "test": "node --test tests/unit.test.mjs tests/readonly.test.mjs tests/dispatch.test.mjs",
+    "test": "node --test tests/unit.test.mjs tests/readonly.test.mjs tests/dispatch.test.mjs tests/queue.test.mjs",
     "smoke": "node tests/smoke.mjs"
   },
   "engines": {

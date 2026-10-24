@@ -8,7 +8,7 @@
  */
 import { buildCatalog, resolveThread } from './lib/catalog.mjs';
 import { findCodexExecutable, resolveCodexHome } from './lib/codex-home.mjs';
-import { readSessionMeta, readTailLines, summarizeEvents } from './lib/rollout.mjs';
+import { findQueuedTurn, readSessionMeta, readTailLines, summarizeEvents } from './lib/rollout.mjs';
 import { createRuns } from './lib/runner.mjs';
 import { ageLabel, clip, readConfig, singleLine, stamp, tokensLabel, usageTotal } from './lib/util.mjs';
 
@@ -25,6 +25,11 @@ const OUTPUT_SCHEMA = {
 const renderText = (_args, value) => [{ type: 'text', text: value.text }];
 
 const READ_KINDS = ['user', 'assistant', 'heartbeat', 'developer', 'tool', 'turn-end'];
+
+/** Tail window used to observe a queued message being delivered and completed. */
+const QUEUE_TAIL_BYTES = 2_097_152;
+const QUEUED_MESSAGE_RE = /^Queued message ([0-9a-f-]{36}) for thread ([0-9a-f-]{36})\.?$/mu;
+const WRITER_CONFLICT_RE = /already has an active writer|thread-store conflict|code -32600/u;
 
 export function apply(ctx, rawConfig) {
   const config = readConfig(rawConfig);
@@ -196,7 +201,7 @@ export function apply(ctx, rawConfig) {
       ctx.tools.register({
         name: 'codex_send',
         description:
-          'Send a message into a Codex thread as a headless turn (or start a new thread when `thread` is omitted). Returns a run id immediately by default; set waitMs to wait before returning. Poll with codex_run. A running Codex turn in the same thread may reject the write.',
+          'Send a message into a Codex thread as a headless turn (or start a new thread when `thread` is omitted). Returns a run id immediately by default; set waitMs to wait before returning. Poll with codex_run. A running Codex turn or another writer (such as the Codex desktop app) in the same thread may reject the write; for threads owned by another writer use codex_queue.',
         parameters: {
           type: 'object',
           properties: {
@@ -264,10 +269,104 @@ export function apply(ctx, rawConfig) {
           if (snapshot.finalMessage) lines.push('', 'final message:', snapshot.finalMessage);
           if (snapshot.error) lines.push('', `error: ${snapshot.error}`);
           if (snapshot.stderrTail) lines.push('', 'stderr tail:', clip(snapshot.stderrTail, 1_200));
+          if (
+            snapshot.status === 'failed' &&
+            WRITER_CONFLICT_RE.test(`${snapshot.finalMessage}\n${snapshot.error ?? ''}\n${snapshot.stderrTail ?? ''}`)
+          ) {
+            lines.push(
+              '',
+              'hint: another Codex writer owns this thread (usually the Codex desktop app); use codex_queue to deliver the message through the official queue channel',
+            );
+          }
           return { text: lines.join('\n') };
         },
       }),
     'codex-bridge.tool.send',
+  );
+
+  /* ── codex_queue ──────────────────────────────────────────────────────── */
+  ctx.effect(
+    () =>
+      ctx.tools.register({
+        name: 'codex_queue',
+        description:
+          'Queue a message for an existing Codex thread through the official `codex queue` channel. Use it when codex_send (exec resume) is rejected because another Codex writer (usually the Codex desktop app) owns the thread: the owning writer delivers and executes the queued message. Optionally wait for the delivered turn to finish and return its final message.',
+        parameters: {
+          type: 'object',
+          properties: {
+            thread: { type: 'string', description: 'Thread name, full id, or id prefix.' },
+            message: { type: 'string', description: 'Message text to queue; required and non-empty.' },
+            waitMs: {
+              type: 'number',
+              description: 'Wait this many milliseconds for the delivered turn to complete before returning (0 = return right after queueing, default 0).',
+            },
+          },
+          required: ['thread', 'message'],
+        },
+        output: { schema: OUTPUT_SCHEMA, render: renderText },
+        async execute(args) {
+          const message = typeof args.message === 'string' ? args.message : '';
+          if (message.trim() === '') throw new Error('message must be a non-empty string');
+          if (!executable) throw new Error('codex executable not found: set config.executable or CODEX_BIN');
+          const catalog = await catalogNow();
+          const thread = requireThread(catalog, args.thread);
+          const label = `${thread.name === '' ? '(unnamed)' : thread.name} ${thread.id}`;
+          const baselineTail = thread.rollout ? readTailLines(thread.rollout.file, QUEUE_TAIL_BYTES) : undefined;
+          const baselineAt = baselineTail ? summarizeEvents(baselineTail.lines, { limit: 1 }).lastEventAt : undefined;
+          const result = await runs.invoke({
+            argv: [executable, 'queue', '--thread', thread.id, '--message', message],
+            timeoutMs: config.queueTimeoutMs,
+          });
+          if (result.timedOut || result.exitCode !== 0) {
+            const detail = clip((result.stderrText || result.stdoutText || 'no output').trim(), 800);
+            throw new Error(
+              `codex queue failed${result.timedOut ? ' (timeout)' : ` (exit ${result.exitCode})`}: ${detail}`,
+            );
+          }
+          const queued = QUEUED_MESSAGE_RE.exec(result.stdoutText);
+          const lines = [
+            `queued: ${queued ? queued[1] : '(id not parsed)'}`,
+            `target: ${label}`,
+            'channel: codex queue (delivered and executed by the owning Codex writer)',
+          ];
+          const waitMs = Number.isFinite(Number(args.waitMs)) ? Math.max(0, Number(args.waitMs)) : 0;
+          if (waitMs > 0) {
+            if (!thread.rollout) {
+              lines.push('', 'delivery wait skipped: thread has no local rollout to observe');
+            } else {
+              const budget = Math.min(waitMs, config.maxWaitMs);
+              const marker = message.trim().slice(0, 80);
+              const startedAt = Date.now();
+              let observed;
+              while (Date.now() - startedAt < budget) {
+                observed = findQueuedTurn(readTailLines(thread.rollout.file, QUEUE_TAIL_BYTES).lines, {
+                  afterTimestamp: baselineAt,
+                  marker,
+                });
+                if (observed) break;
+                await new Promise((resolve) => setTimeout(resolve, config.queuePollMs));
+              }
+              if (observed) {
+                lines.push(
+                  '',
+                  `status: delivered and completed after ${ageLabel(Date.now() - startedAt)}`,
+                  '',
+                  'final message:',
+                  observed.finalMessage || '(none)',
+                );
+                if (observed.error) lines.push('', `error: ${observed.error}`);
+              } else {
+                lines.push(
+                  '',
+                  `status: queued, no completed turn observed within ${ageLabel(budget)} (it may still be running; check codex_read / codex_liveness later)`,
+                );
+              }
+            }
+          }
+          return { text: lines.join('\n') };
+        },
+      }),
+    'codex-bridge.tool.queue',
   );
 
   /* ── codex_run ───────────────────────────────────────────────────────── */

@@ -2,7 +2,7 @@
 
 本文件记录 `dsh-codex-bridge` 的能力验证：对每个工具、参数边界、失败路径与安全承诺逐项给出验证方法、结果和证据。
 
-- 验证对象：commit `27aac52`（验证时点），修复提交 `4fdc340`；
+- 验证对象：commit `27aac52`（验证时点），修复提交 `4fdc340`；功能新增 v0.2.0 `codex_queue`（本文件「codex_queue 能力」节）；
 - 验证环境：Windows + DSH 0.2.1-rc.3 + Codex 桌面版自带 CLI 0.163.0-alpha.11.2（`${CODEX_HOME}` 已脱敏）；
 - 安装形态：profile `dsh.profile.bundles` + `link:` 到本仓库（junction）。
 
@@ -24,7 +24,7 @@
 | B | 派发面：`codex_send` / `codex_run` / runner / nudge | **7/7 PASS**（B1/B5 的 2 项限制已修复）→ [dispatch-plane](verification/dispatch-plane.md) |
 | C | 集成、安装、配置门禁、依赖与性能 | **PASS**（见下） |
 | E2E | 真实新线程：异步派发 → 轮询 → resume 回读 | **PASS**（见下） |
-| 离线套件 | `npm test` | **68/68 pass**（unit 8 + readonly 27 + dispatch 33） |
+| 离线套件 | `npm test` | **77/77 pass**（unit 9 + readonly 27 + dispatch 33 + queue 8） |
 
 ## C. 集成与运行验证
 
@@ -126,7 +126,7 @@ D1 在真实 `${CODEX_HOME}` 上做了模块级修复前后对比：151 个仅�
 | — | liveness 默认扫描全部 goal/automation 线程 | 历史线程多时输出很长；用 `config.liveness.threads` 收窄。 |
 | — | 未知线程导致整次调用失败 | `codex_liveness({ threads: [...] })` 中一个错名会中断整批，而非逐条标注。 |
 | — | `limit` 传小数退回默认值 | 非取整（如 2.5 → 默认 8/15）；用整数。 |
-| — | 桌面版持有的线程不能 `codex_send` resume | Codex 0.163 以 writer 锁拒绝外部 CLI 写入，无绕过选项；写方向需用官方 `codex queue`（插件尚未封装该工具）。 |
+| — | 桌面版持有的线程不能 `codex_send` resume | Codex 0.163 以 writer 锁拒绝外部 CLI 写入，无绕过选项；写方向用官方 `codex queue`（v0.2.0 起由 `codex_queue` 封装）。 |
 
 ## 对接桌面版持有的线程：writer 锁与官方 queue 通道（2026-10-24 补充实测）
 
@@ -136,13 +136,21 @@ D1 在真实 `${CODEX_HOME}` 上做了模块级修复前后对比：151 个仅�
   `thread-store conflict: thread <id> already has an active writer` / `thread/resume failed ... (code -32600)`；`codex exec resume --help` 没有绕过 writer 的选项。
 - `codex_threads` / `codex_read` / `codex_goals` / `codex_liveness` 仍然可用（只读不受影响）。
 - Codex CLI 0.163 提供官方队列通道：`codex queue --thread <完整 UUID> --message <text>`（用线程名会报 `No active session found matching '<name>'`）。投递后由桌面版消费并执行 turn，队列项随即从 `queued_items` 移除；本次实测 seori 在投递后数秒内执行，DSH 侧用 `codex_read` 回读到 `RELAY-HANDSHAKE-OK`。
-- 结论：桌面版运行时，relay 的"写"方向应走 queue；目前插件尚未提供 `codex_queue` 工具（可用 CLI 手动/脚本投递）。
+- 结论：桌面版运行时，relay 的"写"方向应走 queue；v0.2.0 起由 `codex_queue` 工具封装（本机 live 工具需重载/重启后可见）。
 
 | 能力 | 对桌面版持有的线程 |
 |---|---|
 | `codex_threads` / `codex_read` / `codex_goals` / `codex_liveness` | 可用（只读） |
-| `codex_send`（resume） | 不可用：外部 writer 被拒 |
-| `codex queue`（CLI） | 可用：桌面版消费执行，DSH 侧用 `codex_read` 回读 |
+| `codex_send`（resume） | 不可用：外部 writer 被拒（错误里会提示改用 `codex_queue`） |
+| `codex_queue`（v0.2.0，官方 CLI 通道） | 可用：桌面版消费执行，`waitMs` 可观察完成并返回最终消息 |
+
+### codex_queue 能力（v0.2.0）
+
+- 实现：调用官方 `codex queue --thread <UUID> --message <text>`；线程名/前缀先由 catalog 解析成 UUID（CLI 的 `--thread <name>` 只认 "active session"，实测不可靠）。
+- `waitMs > 0`：投递前记录线程 rollout 尾部最后事件时间作为基线，轮询 rollout 直到出现"包含本次消息的 user 行 + 随后的 task_complete"，返回该 turn 的最终消息；超时则明确返回 `status: queued, no completed turn observed ...`。
+- 验证方法：FIXTURE（`tests/queue.test.mjs` 8 个测试：argv/名称与前缀解析/失败/超时/等待成功/等待超时/发送 hint）+ LIVE（用新代码经真实 CLI 投递真实 seori 线程）。
+- LIVE 结果（2026-10-24T14:49Z）：`codex_queue(thread=seori, waitMs=120000)` → 13s 后 `status: delivered and completed after 13s`，`final message: QUEUE-TOOL-OK`；`codex_send(thread=seori)` → 2s 失败并输出 `use codex_queue` 提示。
+- 生效条件：DSH 工具层需要重载该插件 bundle 或重启 DSH 才暴露 `codex_queue`（LIVE 验证是在进程内 harness 中直接调用新代码 + 真实 CLI 完成的）。
 
 ## 未验证 / 方法边界
 
@@ -151,6 +159,7 @@ D1 在真实 `${CODEX_HOME}` 上做了模块级修复前后对比：151 个仅�
 - 真实 `nudge` 在真实 stalled 线程上的端到端效果（仅验证门禁与夹具路径；默认关闭）。
 - 超过 `maxOutputBytes` 的 spill/lossy 在真实 CLI 下的行为（夹具已覆盖逻辑）。
 - `config.liveness.threads` 按 ID 生效的 LIVE 触发（当前 profile 未配置该项；离线测试已覆盖）。
+- `codex_queue` 在 DSH 工具层（重载/重启后）的 live 调用；当前 LIVE 证据来自进程内 harness 直接调用新代码 + 真实 CLI。
 - `node:sqlite` 不可用运行时的实际降级表现（仅代码审阅）。
 
 ## 复现

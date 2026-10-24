@@ -5,6 +5,7 @@ DeepSeek Harness 的 Codex 桥。让 DSH 里的 Agent 可以：
 - **看**：列出本机 Codex 线程（名字 / goal 状态 / 最近写入 / 转录大小）
 - **读**：读某个线程的最近对话（有界尾部，不加载几百 MB 的 rollout）
 - **派**：把消息/任务清单投递进某个 Codex 线程，或开一个新线程，作为无头 turn 执行
+- **排队**：当线程已被其他写者占用（例如 Codex 桌面版持有 writer），用官方 `codex queue` 通道投递，并可选等该 turn 完成返回最终消息
 - **查**：查看派发 turn 的状态与最终消息
 - **盯**：读官方 goal（active/blocked/paused）、automation，做活性快照，必要时补一条"继续"消息
 
@@ -17,11 +18,14 @@ DeepSeek Harness 的 Codex 桥。让 DSH 里的 Agent 可以：
 | `codex_threads` | 线程清单：`query` / `limit` / `activeWithinMinutes` |
 | `codex_read` | 读线程最近条目：`thread` / `limit` / `kinds` / `maxChars` / `tailBytes` |
 | `codex_send` | 投递消息：`message` / `thread`（省略=新线程）/ `waitMs` / `cwd` / `model` / `approvalPolicy` / `sandboxMode` |
+| `codex_queue` | 投递到被其他写者占用的线程（官方 queue 通道）：`thread` / `message` / `waitMs` |
 | `codex_run` | 查看派发结果：无 `runId` 列表；有则详情 |
 | `codex_goals` | 官方 goal 行：`thread` / `status` / `limit` |
 | `codex_liveness` | 活性快照：`threads` / `idleMs` / `nudge` |
 
 `codex_send` 默认立刻返回 `runId`，用 `codex_run` 轮询；长任务不会阻塞对话。
+
+`codex_queue` 用于 `codex_send` 因 `active writer` 被拒绝的线程（通常是 Codex 桌面版持有的线程）：消息由持有写者投递并执行，`waitMs` 会在本地 rollout 里观察该 turn，完成时返回最终消息。
 
 ## 配置
 
@@ -41,6 +45,8 @@ DeepSeek Harness 的 Codex 桥。让 DSH 里的 Agent 可以：
     approvalPolicy: never     # 无头执行没有人工审批通道
     sandboxMode: ''           # 空 = 继承 Codex 原生 config.toml
     defaultWaitMs: 0
+    queueTimeoutMs: 30000    # codex queue 命令自身的超时
+    queuePollMs: 1200        # 等待投递结果时的 rollout 轮询间隔
     disposeGraceMs: 5000
     allowNudge: false         # true 才允许 codex_liveness({nudge:true}) 真发消息
     liveness:
@@ -61,7 +67,8 @@ DeepSeek Harness 的 Codex 桥。让 DSH 里的 Agent 可以：
 - **只读 Codex home**：转录、goal 数据库（按 `goals*.sqlite` 探测，只读打开）、写者锁、automation 文件都只读；本插件不写 `CODEX_HOME`。
 - **驱动走 Harness subprocess seam**：每次 `codex exec` / `codex exec resume` 一个进程，stdout/stderr 收集而非管道，凭据类环境变量不继承（子进程只拿到 PATH/系统目录/`CODEX_HOME` 等白名单 + `config.env` 显式项）。
 - **无头审批**：`codex exec` 没有人工审批通道，默认 `approval_policy=never`；sandbox 默认继承 Codex 原生配置，可从参数覆盖。
-- **单写者**：同一线程已有本插件的进行中 turn 时，`codex_send` 会拒绝再开第二个写者；桌面 app 正在写的线程也可能拒绝外部 resume，错误会原样报告。
+- **单写者**：同一线程已有本插件的进行中 turn 时，`codex_send` 会拒绝再开第二个写者；桌面 app 正在写的线程也会拒绝外部 resume（Codex 报 `already has an active writer`），此时用 `codex_queue` 走官方队列通道。
+- **queue 通道**：`codex_queue` 通过官方 CLI 写 Codex 自己的队列（插件不直接写 `CODEX_HOME` 文件）；投递与执行由持有写者的进程完成，失败会原样报错。
 - **goal 恢复不代做**：`codex_liveness` 不会恢复 blocked goal，也不会对 paused goal 发 nudge；恢复仍需有授权的路径。
 - **prompt 原样传入**：`codex_send` 只用 `trim()` 判断是否为空，首尾空白与内部换行都会原样到达 Codex。
 - **无取消、无流式**：运行中的 turn 不能通过工具取消（Host 关闭时会被终止），`codex_send` 只返回最终消息；长任务用 `waitMs: 0` + `codex_run` 轮询。
@@ -72,7 +79,7 @@ DeepSeek Harness 的 Codex 桥。让 DSH 里的 Agent 可以：
 ## 验证
 
 ```sh
-npm test        # 单元 + 只读面 + 派发面：68 个离线测试，不消耗模型 turn
+npm test        # 单元 + 只读面 + 派发面 + 队列通道：77 个离线测试，不消耗模型 turn
 npm run smoke   # 只读冒烟（需要本机 Codex home）
 ```
 
