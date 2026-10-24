@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ageLabel, clip, readConfig, singleLine, tokensLabel } from '../lib/util.mjs';
+import { ageLabel, clip, readConfig, singleLine, tokensLabel, usageTotal } from '../lib/util.mjs';
 import { parseExecEvents, summarizeEvents } from '../lib/rollout.mjs';
 
 test('clip marks truncation', () => {
@@ -27,6 +27,15 @@ test('tokensLabel buckets', () => {
   assert.equal(tokensLabel(999), '999');
   assert.equal(tokensLabel(1_500), '1.5k');
   assert.equal(tokensLabel(2_500_000), '2.50M');
+});
+
+test('usageTotal tolerates CLI field-name differences', () => {
+  assert.equal(usageTotal({ total_tokens: 12 }), 12);
+  assert.equal(usageTotal({ totalTokens: 7 }), 7);
+  assert.equal(usageTotal({ input_tokens: 17457, output_tokens: 9 }), 17466);
+  assert.equal(usageTotal({ input_tokens: 5 }), 5);
+  assert.equal(usageTotal({}), undefined);
+  assert.equal(usageTotal(undefined), undefined);
 });
 
 test('readConfig applies defaults and normalizes env', () => {

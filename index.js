@@ -10,7 +10,7 @@ import { buildCatalog, resolveThread } from './lib/catalog.mjs';
 import { findCodexExecutable, resolveCodexHome } from './lib/codex-home.mjs';
 import { readSessionMeta, readTailLines, summarizeEvents } from './lib/rollout.mjs';
 import { createRuns } from './lib/runner.mjs';
-import { ageLabel, clip, readConfig, singleLine, stamp, tokensLabel } from './lib/util.mjs';
+import { ageLabel, clip, readConfig, singleLine, stamp, tokensLabel, usageTotal } from './lib/util.mjs';
 
 export const name = 'codex-bridge';
 export const inject = ['tools', 'subprocess'];
@@ -212,8 +212,8 @@ export function apply(ctx, rawConfig) {
         },
         output: { schema: OUTPUT_SCHEMA, render: renderText },
         async execute(args, exec) {
-          const message = typeof args.message === 'string' ? args.message.trim() : '';
-          if (message === '') throw new Error('message must be a non-empty string');
+          const message = typeof args.message === 'string' ? args.message : '';
+          if (message.trim() === '') throw new Error('message must be a non-empty string');
           if (!executable) {
             throw new Error('codex executable not found: set config.executable or CODEX_BIN');
           }
@@ -292,12 +292,13 @@ export function apply(ctx, rawConfig) {
             const run = runs.list().find((item) => item.id === runId);
             if (!run) throw new Error(`unknown run id "${runId}"`);
             const snapshot = runs.snapshot(run);
+            const usage = usageTotal(snapshot.usage);
             const lines = [
               `run: ${snapshot.runId}`,
               `status: ${snapshot.status}`,
               `target: ${snapshot.kind === 'resume' ? snapshot.threadId : `(new)${snapshot.threadId ? ` -> ${snapshot.threadId}` : ''}`}`,
               `elapsed: ${ageLabel(snapshot.elapsedMs)}`,
-              snapshot.usage ? `usage: ${tokensLabel(snapshot.usage.total_tokens ?? snapshot.usage.totalTokens)}` : '',
+              usage !== undefined ? `usage: ${tokensLabel(usage)}` : '',
               snapshot.stdoutLossy ? '(stdout window truncated; full stream spilled on disk)' : '',
               '',
               'final message:',
@@ -399,13 +400,16 @@ export function apply(ctx, rawConfig) {
         async execute(args) {
           if (!home) throw missingHome();
           const catalog = await catalogNow();
-          const idleMs = Math.min(Math.max(Number(args.idleMs) || config.liveness.idleMs, 60_000), 24 * 3_600_000);          const requested = Array.isArray(args.threads) && args.threads.length > 0
+          const idleMs = Math.min(Math.max(Number(args.idleMs) || config.liveness.idleMs, 60_000), 24 * 3_600_000);
+          const configuredThreads = new Set(config.liveness.threads.map((item) => item.toLowerCase()));
+          const requested = Array.isArray(args.threads) && args.threads.length > 0
             ? args.threads.map((reference) => requireThread(catalog, reference))
             : catalog.threads.filter(
                 (thread) =>
                   thread.goal !== undefined ||
                   thread.automations.length > 0 ||
-                  config.liveness.threads.includes(thread.name),
+                  configuredThreads.has(thread.name.toLowerCase()) ||
+                  configuredThreads.has(thread.id.toLowerCase()),
               );
           if (requested.length === 0) return { text: 'no goal- or automation-backed threads found' };
           const now = Date.now();

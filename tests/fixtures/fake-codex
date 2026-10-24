@@ -1,0 +1,4 @@
+#!/bin/sh
+# POSIX shim for the fake Codex CLI. The committed FIX tests spawn fake-codex.mjs
+# through node directly (see tests/support/fake-seam.mjs); this shim is for manual use.
+exec node "$(dirname "$0")/fake-codex.mjs" "$@"
