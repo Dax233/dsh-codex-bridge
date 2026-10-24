@@ -11,6 +11,9 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { FAKE_CODEX, makeHarness } from './support/harness.mjs';
 
@@ -126,6 +129,41 @@ test('Q7 codex_queue reports a hung queue command as a timeout error', async (t)
     bridge.call('codex_queue', { thread: 'slow-queue', message: 'x' }),
     /codex queue failed \(timeout\)/u,
   );
+});
+
+/* ── Q9: executable re-resolution when the Codex bin directory changes ───── */
+
+test('Q9 a cached executable path that disappears is re-resolved before dispatch', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-bridge-exe-'));
+  const previousCodexBin = process.env.CODEX_BIN;
+  t.after(() => {
+    delete process.env.CODEX_BIN;
+    if (previousCodexBin !== undefined) process.env.CODEX_BIN = previousCodexBin;
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  });
+  // Two copies of the fake CLI: the plugin caches the first path at load time,
+  // then the Codex desktop update removes it and CODEX_BIN points at the new one.
+  const exeA = path.join(root, 'fake-codex-a.mjs');
+  const exeB = path.join(root, 'fake-codex-b.mjs');
+  fs.copyFileSync(FAKE_CODEX, exeA);
+  fs.copyFileSync(FAKE_CODEX, exeB);
+  const { fixture, seam, bridge } = await makeHarness(t, {
+    config: { executable: exeA },
+    setup(harnessFixture) {
+      harnessFixture.addThread({ name: 'relocate-target' });
+    },
+  });
+  assert.equal(seam.calls.length, 0);
+  fs.rmSync(exeA, { force: true });
+  process.env.CODEX_BIN = exeB;
+  const text = await bridge.call('codex_queue', { thread: 'relocate-target', message: 'relocated exe' });
+  assert.equal(seam.calls.length, 1);
+  assert.equal(seam.calls[0].argv[0], exeB);
+  assert.match(text, /^queued: /mu);
 });
 
 /* ── Q8: codex_send points at the queue channel on writer conflicts ──────── */

@@ -6,6 +6,7 @@
  * Codex home: transcripts, goals, and locks are read only, and Codex work is
  * driven as child processes through the Harness subprocess seam.
  */
+import { existsSync } from 'node:fs';
 import { buildCatalog, resolveThread } from './lib/catalog.mjs';
 import { findCodexExecutable, resolveCodexHome } from './lib/codex-home.mjs';
 import { findQueuedTurn, readSessionMeta, readTailLines, summarizeEvents } from './lib/rollout.mjs';
@@ -34,8 +35,15 @@ const WRITER_CONFLICT_RE = /already has an active writer|thread-store conflict|c
 export function apply(ctx, rawConfig) {
   const config = readConfig(rawConfig);
   const home = resolveCodexHome(config.codexHome);
-  const executable = findCodexExecutable(config.executable, home);
-  const runs = createRuns({ ctx, config, home, executable });
+  // The Codex desktop app replaces its bin directory on update; re-check the cached
+  // executable instead of freezing the path resolved at plugin load time.
+  let executablePath = findCodexExecutable(config.executable, home);
+  const resolveExecutable = () => {
+    if (executablePath && existsSync(executablePath)) return executablePath;
+    executablePath = findCodexExecutable(config.executable, home);
+    return executablePath;
+  };
+  const runs = createRuns({ ctx, config, home, resolveExecutable });
 
   ctx.effect(() => () => runs.dispose(), 'codex-bridge.runs');
 
@@ -129,7 +137,7 @@ export function apply(ctx, rawConfig) {
             ? `goals: ${catalog.goalsStatus.rows.length} rows`
             : `goals unavailable (${catalog.goalsStatus.reason})`;
           return {
-            text: [`home: ${home}`, `executable: ${executable ?? '(not found)'}`, goalsNote, ...lines].join('\n'),
+            text: [`home: ${home}`, `executable: ${resolveExecutable() ?? '(not found)'}`, goalsNote, ...lines].join('\n'),
           };
         },
       }),
@@ -219,7 +227,7 @@ export function apply(ctx, rawConfig) {
         async execute(args, exec) {
           const message = typeof args.message === 'string' ? args.message : '';
           if (message.trim() === '') throw new Error('message must be a non-empty string');
-          if (!executable) {
+          if (!resolveExecutable()) {
             throw new Error('codex executable not found: set config.executable or CODEX_BIN');
           }
           const catalog = await catalogNow();
@@ -307,14 +315,14 @@ export function apply(ctx, rawConfig) {
         async execute(args) {
           const message = typeof args.message === 'string' ? args.message : '';
           if (message.trim() === '') throw new Error('message must be a non-empty string');
-          if (!executable) throw new Error('codex executable not found: set config.executable or CODEX_BIN');
+          if (!resolveExecutable()) throw new Error('codex executable not found: set config.executable or CODEX_BIN');
           const catalog = await catalogNow();
           const thread = requireThread(catalog, args.thread);
           const label = `${thread.name === '' ? '(unnamed)' : thread.name} ${thread.id}`;
           const baselineTail = thread.rollout ? readTailLines(thread.rollout.file, QUEUE_TAIL_BYTES) : undefined;
           const baselineAt = baselineTail ? summarizeEvents(baselineTail.lines, { limit: 1 }).lastEventAt : undefined;
           const result = await runs.invoke({
-            argv: [executable, 'queue', '--thread', thread.id, '--message', message],
+            args: ['queue', '--thread', thread.id, '--message', message],
             timeoutMs: config.queueTimeoutMs,
           });
           if (result.timedOut || result.exitCode !== 0) {

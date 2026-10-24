@@ -2,8 +2,8 @@
 
 本文件记录 `dsh-codex-bridge` 的能力验证：对每个工具、参数边界、失败路径与安全承诺逐项给出验证方法、结果和证据。
 
-- 验证对象：commit `27aac52`（验证时点），修复提交 `4fdc340`；功能新增 v0.2.0 `codex_queue`（本文件「codex_queue 能力」节）；
-- 验证环境：Windows + DSH 0.2.1-rc.3 + Codex 桌面版自带 CLI 0.163.0-alpha.11.2（`${CODEX_HOME}` 已脱敏）；
+- 验证对象：commit `27aac52`（验证时点），修复提交 `4fdc340`；功能新增 v0.2.0 `codex_queue`、v0.2.1 可执行文件自动跟随桌面版更新（本文件「codex_queue 能力」「桌面版自动更新与工具层对接复验」节）；
+- 验证环境：Windows + DSH 0.2.1-rc.3 + Codex 桌面版自带 CLI；初始验证为 0.163.0-alpha.11.2，2026-10-24 晚桌面版自动更新到 0.164.0-alpha.11.1 后分别回归（`${CODEX_HOME}` 已脱敏）；
 - 安装形态：profile `dsh.profile.bundles` + `link:` 到本仓库（junction）。
 
 方法分三类：
@@ -24,24 +24,25 @@
 | B | 派发面：`codex_send` / `codex_run` / runner / nudge | **7/7 PASS**（B1/B5 的 2 项限制已修复）→ [dispatch-plane](verification/dispatch-plane.md) |
 | C | 集成、安装、配置门禁、依赖与性能 | **PASS**（见下） |
 | E2E | 真实新线程：异步派发 → 轮询 → resume 回读 | **PASS**（见下） |
-| 离线套件 | `npm test` | **77/77 pass**（unit 9 + readonly 27 + dispatch 33 + queue 8） |
+| 离线套件 | `npm test` | **78/78 pass**（unit 9 + readonly 27 + dispatch 33 + queue 9） |
 
 ## C. 集成与运行验证
 
 ### C1 工具注册 — PASS
 
-从真实 `index.js` 的 `apply()` 捕获六个 `tools.register` 定义，参数与源码一致、无缺失：
+从真实 `index.js` 的 `apply()` 捕获七个 `tools.register` 定义，参数与源码一致、无缺失：
 
 | 工具 | 参数 | 必填 |
 |---|---|---|
 | `codex_threads` | `query`, `limit`, `activeWithinMinutes` | — |
 | `codex_read` | `thread`, `limit`, `kinds`, `maxChars`, `tailBytes` | `thread` |
 | `codex_send` | `message`, `thread`, `waitMs`, `cwd`, `model`, `approvalPolicy`, `sandboxMode` | `message` |
+| `codex_queue` | `thread`, `message`, `waitMs` | `thread`, `message` |
 | `codex_run` | `runId`, `limit` | — |
 | `codex_goals` | `thread`, `status`, `limit` | — |
 | `codex_liveness` | `threads`, `idleMs`, `nudge` | — |
 
-六个工具均为 `{ text }` 输出 schema；全新会话可直接调用（本次验证即在全新会话中完成）。
+七个工具均为 `{ text }` 输出 schema；全新会话可直接调用（本次验证即在全新会话中完成）。
 
 ### C2 运行注册表是 Host 级共享 — PASS
 
@@ -126,7 +127,8 @@ D1 在真实 `${CODEX_HOME}` 上做了模块级修复前后对比：151 个仅�
 | — | liveness 默认扫描全部 goal/automation 线程 | 历史线程多时输出很长；用 `config.liveness.threads` 收窄。 |
 | — | 未知线程导致整次调用失败 | `codex_liveness({ threads: [...] })` 中一个错名会中断整批，而非逐条标注。 |
 | — | `limit` 传小数退回默认值 | 非取整（如 2.5 → 默认 8/15）；用整数。 |
-| — | 桌面版持有的线程不能 `codex_send` resume | Codex 0.163 以 writer 锁拒绝外部 CLI 写入，无绕过选项；写方向用官方 `codex queue`（v0.2.0 起由 `codex_queue` 封装）。 |
+| — | 桌面版持有的线程不能 `codex_send` resume | Codex 0.163/0.164 以 writer 锁拒绝外部 CLI 写入，无绕过选项；写方向用官方 `codex queue`（v0.2.0 起由 `codex_queue` 封装）。 |
+| — | liveness 的 `writer lock fresh` 短暂误报 | Codex 写入 `thread_settings_applied` 等非对话事件也会刷新锁文件 mtime；不影响读取与 queue 派发。 |
 
 ## 对接桌面版持有的线程：writer 锁与官方 queue 通道（2026-10-24 补充实测）
 
@@ -150,7 +152,32 @@ D1 在真实 `${CODEX_HOME}` 上做了模块级修复前后对比：151 个仅�
 - `waitMs > 0`：投递前记录线程 rollout 尾部最后事件时间作为基线，轮询 rollout 直到出现"包含本次消息的 user 行 + 随后的 task_complete"，返回该 turn 的最终消息；超时则明确返回 `status: queued, no completed turn observed ...`。
 - 验证方法：FIXTURE（`tests/queue.test.mjs` 8 个测试：argv/名称与前缀解析/失败/超时/等待成功/等待超时/发送 hint）+ LIVE（用新代码经真实 CLI 投递真实 seori 线程）。
 - LIVE 结果（2026-10-24T14:49Z）：`codex_queue(thread=seori, waitMs=120000)` → 13s 后 `status: delivered and completed after 13s`，`final message: QUEUE-TOOL-OK`；`codex_send(thread=seori)` → 2s 失败并输出 `use codex_queue` 提示。
-- 生效条件：DSH 工具层需要重载该插件 bundle 或重启 DSH 才暴露 `codex_queue`（LIVE 验证是在进程内 harness 中直接调用新代码 + 真实 CLI 完成的）。
+- 生效条件：DSH 工具层需要重载该插件 bundle 或重启 DSH 才暴露 `codex_queue`（首次 LIVE 验证是在进程内 harness 中直接调用新代码 + 真实 CLI 完成的）；2026-10-24 23:12 重启后工具层已加载 v0.2.0，并完成真实工具调用（见下节）。
+
+## 桌面版自动更新与工具层对接复验（2026-10-24 23:0x–23:17Z）
+
+**背景**：23:09–23:12 Codex 桌面版自动更新，CLI 从 0.163.0-alpha.11.2 升到 0.164.0-alpha.11.1，并删除了旧 bin 目录 `...\Codex\bin\37f54d68e5533a51\`（新目录 `...\bin\2993767bd1dfb009\`）。插件在加载时缓存了这个旧路径。
+
+**现象（缺陷 D5，v0.2.1 修复）**：所有派发工具在 spawn 时失败 `spawn ...codex.exe ENOENT`；`codex_threads` 头部仍显示已不存在的旧路径。只读工具不受影响。
+
+**临时处置**：为让本次会话继续，在旧路径创建指向新 exe 的 hardlink 兼容 shim；重载 v0.2.1 后该 shim 不再需要，可删除。
+
+**修复（v0.2.1）**：
+- `index.js` 改为 `resolveExecutable()`：每次派发前校验缓存路径是否存在，失效则重新探测（config → CODEX_BIN → 桌面版标准位置 → PATH …），`codex_threads` 头部显示实时解析结果；
+- `lib/runner.mjs` 的 spawn 统一走 `spawnResolved`，遇到 `ENOENT` 时重新探测并重试一次；
+- 回归测试：queue Q9「a cached executable path that disappears is re-resolved before dispatch」。
+- 修复 live 验证（新代码 + 真实 home）：缓存旧路径 → 把文件移走 → `codex_threads` 头部自动切换为 `...\bin\2993767bd1dfb009\codex.exe`。
+
+**CLI 0.164 回归**：
+- 新线程派发 18s 完成 `CLI164-OK`，`codex_run` `usage: 17.5k`（协议与解析未受升级影响）；
+- `codex_send` 对 seori 仍被 writer 锁拒绝（2s），仍输出 `use codex_queue` 提示。
+
+**工具层 relay 复验（v0.2.0 已在 DSH 工具层加载）**：
+- `codex_queue({ thread: 'seori', waitMs: 180000 })` → 68s 返回 `status: delivered and completed after 1m`；
+- seori 回复：`RELAY-QUEUE-TOOL-OK` / `sia=active fei=blocked danny=active kiri=active` / `NONE`；随后 seori 的正常 heartbeat 按时开始；
+- 说明：消息投递、桌面版执行、DSH 侧等待与回读在真实工具层闭环成立。
+
+**顺带观察（minor）**：Codex 写入 `thread_settings_applied` 等非对话事件也会刷新 writer-lock mtime，`codex_liveness` 会短暂误报 `working (writer lock fresh)`；不影响读取与 queue 派发。
 
 ## 未验证 / 方法边界
 
@@ -159,14 +186,13 @@ D1 在真实 `${CODEX_HOME}` 上做了模块级修复前后对比：151 个仅�
 - 真实 `nudge` 在真实 stalled 线程上的端到端效果（仅验证门禁与夹具路径；默认关闭）。
 - 超过 `maxOutputBytes` 的 spill/lossy 在真实 CLI 下的行为（夹具已覆盖逻辑）。
 - `config.liveness.threads` 按 ID 生效的 LIVE 触发（当前 profile 未配置该项；离线测试已覆盖）。
-- `codex_queue` 在 DSH 工具层（重载/重启后）的 live 调用；当前 LIVE 证据来自进程内 harness 直接调用新代码 + 真实 CLI。
 - `node:sqlite` 不可用运行时的实际降级表现（仅代码审阅）。
 
 ## 复现
 
 ```sh
-npm test        # 单元 + 只读面 + 派发面：68 个离线测试，不消耗模型 turn
+npm test        # 单元 + 只读面 + 派发面 + 队列通道：78 个离线测试，不消耗模型 turn
 npm run smoke   # 只读冒烟（需要本机 Codex home）
 ```
 
-LIVE 项需要装有 Codex 并登录的机器，在 DSH 会话里直接调用六个 `codex_*` 工具复验；分面方法与证据见 [read-plane](verification/read-plane.md) 与 [dispatch-plane](verification/dispatch-plane.md)。
+LIVE 项需要装有 Codex 并登录的机器，在 DSH 会话里直接调用七个 `codex_*` 工具复验；分面方法与证据见 [read-plane](verification/read-plane.md) 与 [dispatch-plane](verification/dispatch-plane.md)。

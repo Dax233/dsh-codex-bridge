@@ -75,11 +75,12 @@ DeepSeek Harness 的 Codex 桥。让 DSH 里的 Agent 可以：
 - **`codex_read` 默认含 developer 条目**：默认 kinds 包含 `developer`（Codex 注入的较长指令），只看对话时传 `kinds: ['user', 'assistant', 'turn-end']`。
 - **liveness 默认扫描范围**：不带 `threads` 时扫描所有 goal/automation 线程，历史线程多时输出很长；用 `config.liveness.threads`（线程名或 ID 均可）收窄。
 - **goal 读取依赖 `node:sqlite`**：运行时缺少该模块时 goal 相关能力优雅降级（显示 goals unavailable），其余工具不受影响。
+- **可执行文件跟随桌面版更新**：每次派发前校验缓存的 `codex` 路径；Codex 桌面版自动更新换 bin 目录后会自动重新探测（无需重启插件），`codex_threads` 头部显示当前解析结果。
 
 ## 验证
 
 ```sh
-npm test        # 单元 + 只读面 + 派发面 + 队列通道：77 个离线测试，不消耗模型 turn
+npm test        # 单元 + 只读面 + 派发面 + 队列通道：78 个离线测试，不消耗模型 turn
 npm run smoke   # 只读冒烟（需要本机 Codex home）
 ```
 
