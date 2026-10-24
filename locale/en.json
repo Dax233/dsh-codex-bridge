@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex Bridge",
+    "description": "Inspect local Codex threads, dispatch tasks, read transcripts, and monitor goal state and liveness."
+  }
+}

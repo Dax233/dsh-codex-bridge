@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex 桥",
+    "description": "查看本机 Codex 线程、投递任务、读取对话记录，并监测 goal 状态与线程活性。"
+  }
+}

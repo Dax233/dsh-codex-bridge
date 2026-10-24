@@ -1,0 +1,8 @@
+# dsh-codex-bridge — DSH bundle patch layer
+#
+# One Host row. The plugin registers the codex_* tools on the global tool
+# layer, so every Agent in this profile can inspect and drive local Codex
+# threads. Configuration is optional; see README.md.
+- insert:
+    - id: codex-bridge
+      name: '@local/dsh-codex-bridge'
