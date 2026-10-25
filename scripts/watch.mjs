@@ -11,7 +11,7 @@
  * Usage:
  *   node scripts/watch.mjs            # human-readable
  *   node scripts/watch.mjs --json     # machine-readable
- *   node scripts/watch.mjs --thread seori --config watch.config.json
+ *   node scripts/watch.mjs --thread <name> --config watch.config.json
  *
  * Exit codes: 0 = no alerts, 10 = alerts, 2 = check failed.
  */
@@ -26,16 +26,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
 
 export const DEFAULT_CONFIG = {
-  thread: 'seori',
+  thread: '',
   home: '',
-  heartbeatIntervalMs: 3600000,
   staleAfterMs: 5400000,
   idleAfterMs: 7200000,
   stallHeartbeats: 3,
   requireAutomation: true,
-  requiredTemplateKeys: ['STAGE:', 'SUPPORT:', 'GAPS:', 'CHECK:', 'ASOF:'],
-  genericPatterns: ['研究仍在推进', '研究在推进', '研究继续推进', '未见偏题'],
-  expectedGoals: { sia: 'active', danny: 'active', kiri: 'active', fei: 'blocked' },
+  requiredTemplateKeys: [],
+  genericPatterns: [],
+  expectedGoals: {},
+  tailBytes: 4194304,
 };
 
 /** Parse <heartbeat> task_complete rows out of rollout JSONL lines. */
@@ -124,7 +124,7 @@ export function evaluateWatch(input) {
       if (!latestText.includes('CHECK:') && config.genericPatterns.some(function (pattern) { return latestText.includes(pattern); })) {
         add('generic_receipt', 'warn', 'heartbeat claims progress in generic words without a CHECK scope line');
       }
-      const recent = beats.filter(function (item) { return item.decision === 'NOTIFY' || item.message.includes('STAGE:'); }).slice(-config.stallHeartbeats);
+      const recent = beats.filter(function (item) { return item.decision === 'NOTIFY' || fullText(item).includes('STAGE:'); }).slice(-config.stallHeartbeats);
       if (recent.length >= config.stallHeartbeats) {
         const stalled = recent.every(function (item) {
           return /未推进/u.test(parseStage(fullText(item))?.progress ?? '');
@@ -184,7 +184,9 @@ export async function collectState(options) {
   const thread = resolveThread(catalog.threads, config.thread);
   let heartbeats = [];
   if (thread?.rollout) {
-    const tail = readTailLines(thread.rollout.file, opts.tailBytes ?? 4194304);
+    const tailBytes = Number(config.tailBytes);
+    const limit = Number.isSafeInteger(tailBytes) && tailBytes > 0 ? tailBytes : 4194304;
+    const tail = readTailLines(thread.rollout.file, limit);
     heartbeats = parseHeartbeats(tail.lines);
   }
   return {
@@ -204,7 +206,20 @@ async function main() {
   const threadIndex = argv.indexOf('--thread');
   const configIndex = argv.indexOf('--config');
   const overrides = {};
-  if (threadIndex >= 0) overrides.thread = argv[threadIndex + 1];
+  if (threadIndex >= 0) {
+    const value = argv[threadIndex + 1];
+    if (value === undefined || value.startsWith('--')) {
+      console.error('watch: --thread needs a thread name');
+      process.exitCode = 2;
+      return;
+    }
+    overrides.thread = value;
+  }
+  if (configIndex >= 0 && (argv[configIndex + 1] === undefined || argv[configIndex + 1].startsWith('--'))) {
+    console.error('watch: --config needs a file path');
+    process.exitCode = 2;
+    return;
+  }
   let fileConfig = {};
   try {
     fileConfig = loadConfigFile(configIndex >= 0 ? argv[configIndex + 1] : undefined);
@@ -214,6 +229,11 @@ async function main() {
     return;
   }
   const config = { ...DEFAULT_CONFIG, ...fileConfig, ...overrides };
+  if (typeof config.thread !== 'string' || config.thread.trim().length === 0) {
+    console.error('watch: no thread configured; pass --thread <name> or set "thread" in watch.config.json (see watch.config.example.json)');
+    process.exitCode = 2;
+    return;
+  }
   let result;
   try {
     result = evaluateWatch(await collectState({ config: config }));

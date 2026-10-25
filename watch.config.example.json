@@ -4,7 +4,8 @@
   "idleAfterMs": 7200000,
   "stallHeartbeats": 3,
   "requireAutomation": true,
-  "requiredTemplateKeys": ["STAGE:", "SUPPORT:", "GAPS:", "CHECK:", "ASOF:"],
+  "requiredTemplateKeys": [],
   "genericPatterns": [],
-  "expectedGoals": { "researcher-a": "active" }
+  "expectedGoals": {},
+  "tailBytes": 4194304
 }

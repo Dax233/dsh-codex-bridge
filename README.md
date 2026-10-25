@@ -97,7 +97,16 @@ npm run smoke   # 只读冒烟（需要本机 Codex home）
    - 目标漂移：`goal_drift`、`goal_missing`（需人工确认是否授权）
    退出码 0 = 无告警，10 = 有告警，2 = 检查本身失败；`--json` 供定时任务解析。
 
-配置：仓库根可放 `watch.config.json` 覆盖默认值（thread、阈值、expectedGoals 等，字段示例见 `watch.config.example.json`）；脚本内置默认值对应本机的 seori relay：heartbeat 90 分钟未更新告警、线程 2 小时无写入告警、连续 3 次「进展=未推进」报 `stage_stalled`。其他部署建议复制示例后覆盖 `thread` 与 `expectedGoals`。
+配置：脚本**不内置部署专属默认值**。必须提供 `thread`（`--thread <name>` 或 `watch.config.json`），否则退出码 2 并给出提示；模板键、泛化措辞、期望 goal 默认关闭，按需在配置里开启（字段示例见 `watch.config.example.json`）。阈值默认 heartbeat 90 分钟、线程 2 小时、连续 3 次未推进；`tailBytes`（默认 4 MiB）控制 rollout 尾部读取量。
+
+唤醒层示例（在 relay 会话里创建，约每 30 分钟一轮）：
+
+```text
+schedule_create prompt = "运行 node <本仓库>/scripts/watch.mjs --json。
+退出码 0 就静默结束；退出码 10 时用一句话汇报告警 code 与 thread，其它不要做。"
+```
+
+`schedule_create` 到点把 prompt 投递回本会话，模型据此执行脚本；脚本本身仍不持有定时器、不联网、不写 Codex home。
 
 ## 安装
 
