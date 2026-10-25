@@ -53,7 +53,7 @@ export function parseHeartbeats(lines) {
     if (!text.includes('<heartbeat>')) continue;
     const decision = (text.match(/<decision>([^<]+)<\/decision>/u) || [])[1] ?? '?';
     const message = (text.match(/<message>([\s\S]*?)<\/message>/u) || [])[1]?.trim() ?? '';
-    beats.push({ at: row.timestamp, atMs: Date.parse(row.timestamp), decision: decision, message: message });
+    beats.push({ at: row.timestamp, atMs: Date.parse(row.timestamp), decision: decision, message: message, text: text });
   }
   return beats.sort(function (a, b) { return a.atMs - b.atMs; });
 }
@@ -102,6 +102,7 @@ export function evaluateWatch(input) {
 
   const beats = [...(input.heartbeats ?? [])].sort(function (a, b) { return a.atMs - b.atMs; });
   const latest = beats[beats.length - 1];
+  const fullText = function (item) { return String(item?.text ?? item?.message ?? ''); };
   if (!latest) {
     add('heartbeat_missing', 'high', 'no <heartbeat> completion found in the rollout tail');
   } else {
@@ -109,23 +110,24 @@ export function evaluateWatch(input) {
     if (ageMs > config.staleAfterMs) {
       add('heartbeat_stale', 'high', 'latest heartbeat is ' + Math.round(ageMs / 60000) + 'm old (threshold ' + Math.round(config.staleAfterMs / 60000) + 'm)');
     }
-    const substantive = latest.decision === 'NOTIFY' || latest.message.includes('STAGE:');
+    const latestText = fullText(latest);
+    const substantive = latest.decision === 'NOTIFY' || latestText.includes('STAGE:');
     if (substantive) {
-      const missing = config.requiredTemplateKeys.filter(function (key) { return !latest.message.includes(key); });
+      const missing = config.requiredTemplateKeys.filter(function (key) { return !latestText.includes(key); });
       if (missing.length > 0) {
         add('template_missing', 'warn', 'substantive heartbeat (decision=' + latest.decision + ') lacks: ' + missing.join(', '));
       }
-      const stage = parseStage(latest.message);
+      const stage = parseStage(latestText);
       if (stage && /有/u.test(stage.progress ?? '') && !looksLikePath(stage.evidence)) {
         add('stage_no_evidence', 'warn', 'STAGE claims progress but the evidence field has no path/line reference');
       }
-      if (!latest.message.includes('CHECK:') && config.genericPatterns.some(function (pattern) { return latest.message.includes(pattern); })) {
+      if (!latestText.includes('CHECK:') && config.genericPatterns.some(function (pattern) { return latestText.includes(pattern); })) {
         add('generic_receipt', 'warn', 'heartbeat claims progress in generic words without a CHECK scope line');
       }
       const recent = beats.filter(function (item) { return item.decision === 'NOTIFY' || item.message.includes('STAGE:'); }).slice(-config.stallHeartbeats);
       if (recent.length >= config.stallHeartbeats) {
         const stalled = recent.every(function (item) {
-          return /未推进/u.test(parseStage(item.message)?.progress ?? '');
+          return /未推进/u.test(parseStage(fullText(item))?.progress ?? '');
         });
         if (stalled) add('stage_stalled', 'info', 'last ' + config.stallHeartbeats + ' substantive heartbeats all report 进展=未推进');
       }

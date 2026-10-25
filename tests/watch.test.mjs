@@ -11,21 +11,23 @@ const thread = (over) => Object.assign({
   automations: [{ id: 'seori', status: 'ACTIVE' }],
   rollout: { file: 'fixture', sizeBytes: 1000, mtimeMs: NOW - 10 * 60000 },
 }, over ?? {});
+const template = [
+  'STAGE: 评价参照与增量资格核清 | 进展=有（有限） | 证据=docs/x.md:3',
+  'S: a / b / c / d / e',
+  'D: a / b / c / d / e',
+  'K: a / b / c / d / e',
+  'F: 无新单元（本人未选）',
+  'SUPPORT: runtime',
+  'GAPS: none',
+  'CHECK: threads x/y | no drift | 全量=未知',
+  'ASOF: 2026-10-25T05:34Z',
+].join('\n');
 const beat = (over) => Object.assign({
   at: new Date(NOW - 20 * 60000).toISOString(),
   atMs: NOW - 20 * 60000,
   decision: 'NOTIFY',
-  message: [
-    'STAGE: 评价参照与增量资格核清 | 进展=有（有限） | 证据=docs/x.md:3',
-    'S: a / b / c / d / e',
-    'D: a / b / c / d / e',
-    'K: a / b / c / d / e',
-    'F: 无新单元（本人未选）',
-    'SUPPORT: runtime',
-    'GAPS: none',
-    'CHECK: threads x/y | no drift | 全量=未知',
-    'ASOF: 2026-10-25T05:34Z',
-  ].join('\n'),
+  message: '新增强简单对照收窄了一项来源策略采用论证；共同阶段尚无新增准入。',
+  text: template,
 }, over ?? {});
 const goals = [
   { threadId: 'aaaaaaaa-0000-7000-8000-000000000001', status: 'active' },
@@ -65,11 +67,11 @@ test('stale heartbeat and inactive automation are runtime alerts', () => {
 });
 
 test('NOTIFY heartbeat missing template keys or evidence is flagged', () => {
-  const missing = evaluateWatch(base({ heartbeats: [beat({ message: 'STAGE: x | 进展=有（有限） | 证据=docs/x.md:3\nCHECK: y' })] }));
+  const missing = evaluateWatch(base({ heartbeats: [beat({ text: 'STAGE: x | 进展=有（有限） | 证据=docs/x.md:3\nCHECK: y' })] }));
   assert.ok(codes(missing).includes('template_missing'));
-  const noEvidence = evaluateWatch(base({ heartbeats: [beat({ message: beat().message.replace('docs/x.md:3', '既有结果') })] }));
+  const noEvidence = evaluateWatch(base({ heartbeats: [beat({ text: template.replace('docs/x.md:3', '既有结果') })] }));
   assert.ok(codes(noEvidence).includes('stage_no_evidence'));
-  const generic = evaluateWatch(base({ heartbeats: [beat({ message: '研究仍在推进，四位均有接续。' })] }));
+  const generic = evaluateWatch(base({ heartbeats: [beat({ text: '研究仍在推进，四位均有接续。' })] }));
   assert.ok(codes(generic).includes('template_missing'));
 });
 
@@ -77,7 +79,7 @@ test('three stalled substantive heartbeats produce an info alert', () => {
   const stalledBeat = (minutes) => beat({
     atMs: NOW - minutes * 60000,
     at: new Date(NOW - minutes * 60000).toISOString(),
-    message: beat().message.replace('进展=有（有限）', '进展=未推进'),
+    text: template.replace('进展=有（有限）', '进展=未推进'),
   });
   const result = evaluateWatch(base({ heartbeats: [stalledBeat(60), stalledBeat(40), stalledBeat(20)] }));
   assert.ok(codes(result).includes('stage_stalled'));
@@ -106,4 +108,21 @@ test('parseHeartbeats extracts decision and message from rollout rows', () => {
   assert.equal(beats.length, 1);
   assert.equal(beats[0].decision, 'NOTIFY');
   assert.equal(beats[0].message, 'STAGE: x');
+  assert.ok(beats[0].text.includes('<heartbeat>'));
+  assert.ok(beats[0].text.includes('STAGE: x'));
+});
+
+test('real heartbeat with template outside <message> yields no template alert', () => {
+  const ts = new Date(NOW - 20 * 60000).toISOString();
+  const line = JSON.stringify({
+    timestamp: ts,
+    type: 'event_msg',
+    payload: {
+      type: 'task_complete',
+      last_agent_message: template + '\n\n<heartbeat>\n<automation_id>seori</automation_id>\n<decision>NOTIFY</decision>\n<message>新增强简单对照收窄了一项来源策略采用论证；共同阶段尚无新增准入。</message>\n</heartbeat>',
+    },
+  });
+  const beats = parseHeartbeats([line]);
+  const result = evaluateWatch(base({ heartbeats: beats }));
+  assert.deepEqual(codes(result), []);
 });
