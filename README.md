@@ -86,6 +86,19 @@ npm run smoke   # 只读冒烟（需要本机 Codex home）
 
 能力矩阵、验证方法、原始结论与已知限制见 [docs/verification.md](docs/verification.md)；分面细节见 [read-plane](docs/verification/read-plane.md) 与 [dispatch-plane](docs/verification/dispatch-plane.md)。验证环境为 Windows + DSH 0.2.1-rc.3 + Codex 桌面版 CLI；真实派发验证只新建测试线程。
 
+## 监控与自动介入（watch）
+
+插件本身**没有后台定时器，也不会唤醒 DSH 会话**；`codex_liveness({ nudge: true })` 只是向 Codex 线程补发一条续跑消息（默认关闭），方向相反。要让 relay "只在异常时介入"，用两层：
+
+1. **唤醒层**：DSH 的 `schedule_create` 定时把一条 prompt 投递回本会话（Host 级 durable reminder；也可用 Windows 计划任务，但那样只能发通知、不能唤醒 DSH）。
+2. **规则层**：`node scripts/watch.mjs --json` 读取 `${CODEX_HOME}`（rollout heartbeat / goals / automation / liveness），只输出告警：
+   - 运行异常：`heartbeat_missing`、`heartbeat_stale`、`thread_idle`、`automation_inactive`
+   - 回执/阶段异常：`template_missing`、`generic_receipt`、`stage_no_evidence`、`stage_stalled`
+   - 目标漂移：`goal_drift`、`goal_missing`（需人工确认是否授权）
+   退出码 0 = 无告警，10 = 有告警；`--json` 供定时任务解析。
+
+配置：仓库根可放 `watch.config.json` 覆盖默认值（thread、阈值、expectedGoals）；默认守望 seori，heartbeat 90 分钟未更新告警、线程 2 小时无写入告警、连续 3 次「进展=未推进」报 `stage_stalled`。
+
 ## 安装
 
 ```sh
