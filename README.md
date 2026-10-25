@@ -95,9 +95,9 @@ npm run smoke   # 只读冒烟（需要本机 Codex home）
    - 运行异常：`heartbeat_missing`、`heartbeat_stale`、`thread_idle`、`automation_inactive`
    - 回执/阶段异常：`template_missing`、`generic_receipt`、`stage_no_evidence`、`stage_stalled`
    - 目标漂移：`goal_drift`、`goal_missing`（需人工确认是否授权）
-   退出码 0 = 无告警，10 = 有告警；`--json` 供定时任务解析。
+   退出码 0 = 无告警，10 = 有告警，2 = 检查本身失败；`--json` 供定时任务解析。
 
-配置：仓库根可放 `watch.config.json` 覆盖默认值（thread、阈值、expectedGoals）；默认守望 seori，heartbeat 90 分钟未更新告警、线程 2 小时无写入告警、连续 3 次「进展=未推进」报 `stage_stalled`。
+配置：仓库根可放 `watch.config.json` 覆盖默认值（thread、阈值、expectedGoals 等，字段示例见 `watch.config.example.json`）；脚本内置默认值对应本机的 seori relay：heartbeat 90 分钟未更新告警、线程 2 小时无写入告警、连续 3 次「进展=未推进」报 `stage_stalled`。其他部署建议复制示例后覆盖 `thread` 与 `expectedGoals`。
 
 ## 安装
 

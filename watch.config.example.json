@@ -1,0 +1,10 @@
+{
+  "thread": "your-relay-thread",
+  "staleAfterMs": 5400000,
+  "idleAfterMs": 7200000,
+  "stallHeartbeats": 3,
+  "requireAutomation": true,
+  "requiredTemplateKeys": ["STAGE:", "SUPPORT:", "GAPS:", "CHECK:", "ASOF:"],
+  "genericPatterns": [],
+  "expectedGoals": { "researcher-a": "active" }
+}

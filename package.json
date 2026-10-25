@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-codex-bridge",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "description": "Codex bridge for DeepSeek Harness: inspect local Codex threads, dispatch tasks to them, read their transcripts, watch goal state and liveness, and drive headless Codex turns through the subprocess seam.",
@@ -12,6 +12,8 @@
   "files": [
     "index.js",
     "lib/*.mjs",
+    "scripts/**",
+    "watch.config.example.json",
     "cordis.patch.yml",
     "README.md",
     "locale/*.json",
